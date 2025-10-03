@@ -295,6 +295,9 @@ depend on the value of `gptel-org-branching-context', which see."
                         (gptel--apply-preset
                          preset (lambda (sym val) (set (make-local-variable sym) val))))
                       gptel-org--presets))
+              ;; Replace the headings with @user
+              (gptel-org--replace-headings-with-role-markers)
+              (gptel-org-clean-duplicates)
               (setq org-complex-heading-regexp ;For org-element-context to run
                     (buffer-local-value 'org-complex-heading-regexp org-buf))
               (setq tab-width      ;Match source indentation for list parsing
@@ -896,6 +899,40 @@ cleaning up after."
               (buffer-substring (point) start-pt)
             (prog1 (buffer-substring (point) (point-max))
                    (set-marker start-pt (point-max)))))))))
+
+(defun gptel-org--replace-headings-with-role-markers ()
+  "Replace org headings with @user: and @assistant: role markers.
+Alternates between @user: and @assistant: markers, starting with @user:."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward "^*+ " nil t)
+      (let ((heading-start (line-beginning-position))
+            (heading-end (line-end-position)))
+        ;; Replace the heading line with role marker
+        (delete-region (point) heading-start)
+        (insert "@user\n")))))
+
+(defun gptel-org-clean-duplicates ()
+  "Clean AI conversation in current buffer to ensure proper @user/@assistant sequence.
+Removes duplicate consecutive tags and ensures proper alternation."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((last-tag nil))
+      ;; Process buffer using re-search-forward, deleting duplicates directly
+      (while (re-search-forward "^@\\(user\\|assistant\\)" nil t)
+        (let* ((current-tag (intern (match-string 1)))
+               (line-start (line-beginning-position))
+               (line-end (line-end-position)))
+          (cond
+           ;; Delete duplicate consecutive tags
+           ((eq last-tag current-tag)
+            (delete-region line-start (1+ line-end))
+            ;; Move point back since we deleted text
+            (goto-char line-start))
+           ;; Keep the tag and update last-tag
+           (t
+            (setq last-tag current-tag))))))))
+
 
 (provide 'gptel-org)
 ;;; gptel-org.el ends here
