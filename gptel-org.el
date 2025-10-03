@@ -255,6 +255,8 @@ depend on the value of `gptel-org-branching-context', which see."
                            (buffer-local-value 'gptel-org-ignore-elements
                                                org-buf)))
                 (gptel-org--strip-elements))
+              ;; Replace the headings with @user
+              (gptel-org--replace-headings-with-role-markers)
               (setq org-complex-heading-regexp ;For org-element-context to run
                     (buffer-local-value 'org-complex-heading-regexp org-buf))
               (current-buffer))))
@@ -741,6 +743,18 @@ cleaning up after."
               (buffer-substring (point) start-pt)
             (prog1 (buffer-substring (point) (point-max))
                    (set-marker start-pt (point-max)))))))))
+
+(defun gptel-org--replace-headings-with-role-markers ()
+  "Replace org headings with @user: and @assistant: role markers.
+Alternates between @user: and @assistant: markers, starting with @user:."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward "^*+ " nil t)
+      (let ((heading-start (line-beginning-position))
+            (heading-end (line-end-position)))
+        ;; Replace the heading line with role marker
+        (delete-region (point) heading-start)
+        (insert "@user\n")))))
 
 (provide 'gptel-org)
 ;;; gptel-org.el ends here
