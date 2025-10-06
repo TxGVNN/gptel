@@ -1476,8 +1476,35 @@ file."
 
 ;;; Minor mode and UI
 
-;; NOTE: It's not clear that this is the best strategy:
-(add-to-list 'text-property-default-nonsticky '(gptel . t))
+;; NOTE: Add a new text adjacent will become the part of assistant too
+(add-to-list 'text-property-default-nonsticky '(gptel . nil))
+
+(defface gptel-response-highlight-face
+  '((((class color) (min-colors 257) (background light))
+     :background "#e6f2ff" :extend t)
+    (((class color) (min-colors 88) (background light))
+     :background "#cce7ff" :extend t)
+    (((class color) (min-colors 88) (background dark))
+     :background "#202030" :extend t)
+    (((class color) (background dark))
+     :background "#202030" :extend t))
+  "Face used to highlight gptel responses in the dedicated chat buffer."
+  :group 'gptel)
+
+(defun gptel--response-text-search (bound)
+  "Search for text with the `gptel' property set to `response' up to BOUND."
+  (let ((pos (point)))
+    (while (and (< pos bound)
+                (not (eq (get-text-property pos 'gptel) 'response)))
+      (setq pos (next-single-property-change pos 'gptel nil bound)))
+    (if (and (< pos bound) (eq (get-text-property pos 'gptel) 'response))
+        (let ((end (next-single-property-change pos 'gptel nil bound)))
+          (set-match-data (list pos end))
+          (goto-char end)
+          t)
+      (goto-char bound)
+      nil)))
+
 
 (defun gptel--inherit-stickiness (beg end pre)
   "Mark any change to an LLM response region as a response.
@@ -1502,6 +1529,10 @@ which see for BEG, END and PRE."
         (unless (derived-mode-p 'org-mode 'markdown-mode 'text-mode)
           (gptel-mode -1)
           (user-error (format "`gptel-mode' is not supported in `%s'." major-mode)))
+        (when gptel-highlight-assistant-responses
+          (font-lock-add-keywords
+           nil '((gptel--response-text-search 0 'gptel-response-highlight-face prepend)) t)
+          (font-lock-flush))
         (add-hook 'before-save-hook #'gptel--save-state nil t)
         (add-hook 'after-change-functions 'gptel--inherit-stickiness nil t)
         (gptel--prettify-preset)
@@ -4169,6 +4200,24 @@ context for the ediff session."
   "Switch to next gptel-response at this point, if it exists."
   (interactive "p")
   (gptel--previous-variant (- arg)))
+
+(defcustom gptel-highlight-assistant-responses t
+  "Whether or not the assistant responses should be highlighted.
+
+Applies only to the dedicated gptel chat buffer."
+  :type 'boolean
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (when (bound-and-true-p gptel-mode)
+           (if value
+               (progn
+                 (font-lock-add-keywords
+                  nil '((gptel--response-text-search 0 'gptel-response-highlight-face prepend)) t)
+                 (font-lock-flush))
+             (font-lock-remove-keywords
+              nil '((gptel--response-text-search 0 'gptel-response-highlight-face prepend)))
+             (font-lock-flush)))))
+
 
 (provide 'gptel)
 ;;; gptel.el ends here
