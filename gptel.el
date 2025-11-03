@@ -222,6 +222,17 @@
 
 
 ;;; User options
+(defcustom gptel-edit-tool-result t
+  "Whether to allow editing tool results before processing.
+
+When non-nil, tool results are opened in a temporary buffer where
+you can modify them before they are sent back to the LLM.  Use
+\\[C-c C-c] to accept changes or \\[C-c C-k] to cancel.
+
+When nil, tool results are processed immediately without user
+intervention."
+  :type 'boolean)
+
 (defcustom gptel-save-state-hook nil
   "Hook run before gptel saves model parameters to a file.
 
@@ -1833,8 +1844,11 @@ NAME and ARG-VALUES are the name and arguments for the call."
                     (condition-case errdata
                         (apply (gptel-tool-function tool-spec) arg-values)
                       (error (mapconcat #'gptel--to-string errdata " ")))))
-               (funcall process-tool-result result))))
-  (and (overlayp ov) (delete-overlay ov)))
+               ;; Allow editing tool result if enabled, otherwise process directly
+               (if gptel-edit-tool-result
+                   (gptel--edit-tool-result result process-tool-result tool-spec)
+                 (funcall process-tool-result result))))
+  (and (overlayp ov) (delete-overlay ov))))
 
 (defun gptel--reject-tool-calls (&optional _response ov)
   (interactive (pcase-let ((`(,resp . ,o) (get-char-property-and-overlay
@@ -2325,6 +2339,66 @@ context for the ediff session."
   "Switch to ARG next gptel-response at this point, if it exists."
   (interactive "p")
   (gptel--previous-variant (- arg)))
+
+(defun gptel--edit-tool-result (result process-tool-result tool-spec)
+  "Edit tool RESULT in a temporary buffer before processing.
+
+RESULT is the output from the tool function.
+PROCESS-TOOL-RESULT is the callback to invoke with the final result.
+TOOL-SPEC is the gptel-tool struct for context."
+  (let* ((tool-name (gptel-tool-name tool-spec))
+         (buffer-name (format "*gptel-tool-result-%s*" tool-name))
+         (result-buffer (get-buffer-create buffer-name)))
+    (with-current-buffer result-buffer
+      (erase-buffer)
+      (insert (or (and result (gptel--to-string result)) ""))
+      (goto-char (point-min))
+      ;; Set up the buffer for editing
+      (when (fboundp 'text-mode) (text-mode))
+      (visual-line-mode 1)
+      (buffer-enable-undo)
+      ;; Add helpful header
+      (save-excursion
+        (goto-char (point-min))
+        (insert (propertize
+                 (format "Tool Result: %s\n" tool-name)
+                 'face 'font-lock-comment-face)
+                (propertize
+                 "Edit the result below, then press C-c C-c to continue or C-c C-k to cancel.\n"
+                 'face 'font-lock-comment-face)
+                (propertize (make-string 60 ?-) 'face 'font-lock-comment-face)
+                "\n\n"))
+      ;; Set up key bindings
+      (let ((map (make-sparse-keymap)))
+        (define-key map (kbd "C-c C-c")
+          (lambda ()
+            "Accept the edited result and continue processing."
+            (interactive)
+            (let ((edited-result (save-excursion
+                                   (goto-char (point-min))
+                                   ;; Skip the header lines
+                                   (forward-line 4)
+                                   (string-trim (buffer-substring-no-properties (point) (point-max))))))
+              (quit-window)
+              (funcall process-tool-result edited-result))))
+        (define-key map (kbd "C-c C-k")
+          (lambda ()
+            "Cancel the tool result editing."
+            (interactive)
+            (when (y-or-n-p "Cancel tool result editing? ")
+              (quit-window)
+              (message "Tool result editing cancelled"))))
+        (use-local-map (make-composed-keymap map (current-local-map))))
+      ;; Position cursor after header
+      (forward-line 4)
+      ;; Set up header line for instructions
+      (setq header-line-format
+            (substitute-command-keys
+             "\\<current-local-map>Edit tool result — Accept: \\[C-c C-c], Cancel: \\[C-c C-k]")))
+    ;; Display the buffer
+    (pop-to-buffer result-buffer
+                   '((display-buffer-pop-up-window display-buffer-reuse-window)
+                     (window-height . fit-window-to-buffer)))))
 
 (provide 'gptel)
 ;;; gptel.el ends here
