@@ -1853,7 +1853,7 @@ NAME and ARG-VALUES are the name and arguments for the call."
                       (error (mapconcat #'gptel--to-string errdata " ")))))
                ;; Allow editing tool result if enabled, otherwise process directly
                (if gptel-edit-tool-result
-                   (gptel--edit-tool-result result process-tool-result tool-spec)
+                   (gptel--edit-tool-result result process-tool-result tool-spec arg-values)
                  (funcall process-tool-result result))))
   (and (overlayp ov) (delete-overlay ov))))
 
@@ -2347,14 +2347,19 @@ context for the ediff session."
   (interactive "p")
   (gptel--previous-variant (- arg)))
 
-(defun gptel--edit-tool-result (result process-tool-result tool-spec)
+(defun gptel--edit-tool-result (result process-tool-result tool-spec arg-values)
   "Edit tool RESULT in a temporary buffer before processing.
 
 RESULT is the output from the tool function.
 PROCESS-TOOL-RESULT is the callback to invoke with the final result.
 TOOL-SPEC is the gptel-tool struct for context."
   (let* ((tool-name (gptel-tool-name tool-spec))
-         (buffer-name (format "*gptel-tool-result-%s*" tool-name))
+         (arg-string
+          (mapconcat (lambda (arg)
+                       (cond ((stringp arg) (prin1-to-string arg))
+                             (t (prin1-to-string arg))))
+                     arg-values ", "))
+         (buffer-name (format "*gptel-tool-result-%s-%s-%s*" tool-name (substring arg-string 0 16) (random)))
          (result-buffer (get-buffer-create buffer-name)))
     (with-current-buffer result-buffer
       (erase-buffer)
@@ -2369,6 +2374,13 @@ TOOL-SPEC is the gptel-tool struct for context."
         (goto-char (point-min))
         (insert (propertize
                  (format "Tool Result: %s\n" tool-name)
+                 'face 'font-lock-comment-face)
+                ;; display arg-string
+                (propertize
+                 (format "Tool Arguments: (%s)\n"
+                         (if (string-empty-p arg-string)
+                             ""
+                           arg-string))
                  'face 'font-lock-comment-face)
                 (propertize
                  "Edit the result below, then press C-c C-c to continue or C-c C-k to cancel.\n"
