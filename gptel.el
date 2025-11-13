@@ -2352,7 +2352,7 @@ TOOL-SPEC is the gptel-tool struct for context."
                        (cond ((stringp arg) (prin1-to-string arg))
                              (t (prin1-to-string arg))))
                      arg-values ", "))
-         (buffer-name (format "*gptel-tool-result-%s-%s-%s*" tool-name (substring arg-string 0 16) (random)))
+         (buffer-name (format "*gptel-tool-result-%s-%s*" tool-name  (random)))
          (result-buffer (get-buffer-create buffer-name)))
     (with-current-buffer result-buffer
       (erase-buffer)
