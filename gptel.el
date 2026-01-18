@@ -1371,15 +1371,14 @@ JSON query instead of the Lisp structure gptel uses."
                         (interactive) (gptel--continue-query 'copy))
             "C-c C-k" #'quit-window)
           (current-local-map)))
-        (unless header-line-format
-          (setq header-line-format
+          (setq-local header-line-format
                 (substitute-command-keys
                  (concat
                   "Edit request: \\[read-only-mode],"
                   " Send request: \\[gptel--continue-query],"
                   (format " Copy Curl: %s"
                           (propertize "C-c C-w" 'face 'help-key-binding))
-                  " Quit: \\[quit-window]"))))
+                  " Quit: \\[quit-window]")))
         (display-buffer (current-buffer) gptel-display-buffer-action)))))
 
 (defun gptel--continue-query (&optional copy)
