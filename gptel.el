@@ -2449,7 +2449,7 @@ TOOL-SPEC is the gptel-tool struct for context."
                        (cond ((stringp arg) (prin1-to-string arg))
                              (t (prin1-to-string arg))))
                      arg-values ", "))
-         (buffer-name (format "*gptel-tool-result-%s-%s*" tool-name (random)))
+         (buffer-name (format "*gptel-tool-result-%s-%s-%s*" tool-name (format-time-string "%s" (current-time)) (random)))
          (result-buffer (get-buffer-create buffer-name)))
     (with-current-buffer result-buffer
       (erase-buffer)
@@ -2486,9 +2486,9 @@ TOOL-SPEC is the gptel-tool struct for context."
             (let ((edited-result (save-excursion
                                    (goto-char (point-min))
                                    ;; Skip the header lines
-                                   (forward-line 4)
+                                   (search-forward "------------------------------------------------------------")
                                    (string-trim (buffer-substring-no-properties (point) (point-max))))))
-              (quit-window)
+              (kill-buffer (current-buffer))
               (funcall process-tool-result edited-result))))
         (define-key map (kbd "C-c C-k")
           (lambda ()
