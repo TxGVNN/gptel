@@ -2258,7 +2258,7 @@ This is a bug, please report it!"))))
      (t (let* ((tool-display (plist-get (gptel-fsm-info gptel--fsm-last)
                                         :tool-display)))
           (apply #'gptel--accept-tool-calls tool-display)))))
-  (quit-window t))
+  (kill-buffer (current-buffer)))
 
 (defun gptel--inspect-reject-tool-calls (&optional _)
   "Cancel tool-calls and return to query buffer."
@@ -2955,9 +2955,7 @@ TOOL-SPEC is the gptel-tool struct for context."
             (substitute-command-keys
              "\\<current-local-map>Edit tool result — Accept: \\[C-c C-c], Cancel: \\[C-c C-k]")))
     ;; Display the buffer
-    (pop-to-buffer result-buffer
-                   '((display-buffer-pop-up-window display-buffer-reuse-window)
-                     (window-height . fit-window-to-buffer)))))
+    (display-buffer result-buffer gptel-display-buffer-action)))
 
 (defcustom gptel-edit-tool-result t
   "Whether to allow editing tool results before processing.
