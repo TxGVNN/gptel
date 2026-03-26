@@ -2959,7 +2959,7 @@ TOOL-SPEC is the gptel-tool struct for context."
     ;; Display the buffer
     (display-buffer result-buffer gptel-display-buffer-action)))
 
-(defcustom gptel-edit-tool-result t
+(defcustom gptel-edit-tool-result nil
   "Whether to allow editing tool results before processing.
 
 When non-nil, tool results are opened in a temporary buffer where
