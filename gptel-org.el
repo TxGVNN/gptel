@@ -248,7 +248,10 @@ depend on the value of `gptel-org-branching-context', which see."
                     "Using `gptel-org-branching-context' requires Org version 9.7 or higher, it will be ignored."))))
         ;; Create prompt from direct ancestors of point
         (save-excursion
-          (let* ((org-buf (current-buffer))
+          (let* ((root-id (org-entry-get (point) "ROOT_ID" nil))
+                 (root-id-content (when root-id
+                                    (gptel-org--root-id-subtree-string root-id)))
+                 (org-buf (current-buffer))
                  ;; Collect all heading start positions in the lineage
                  (full-bounds (gptel-org--element-lineage-map
                                   (org-element-at-point) #'gptel-org--element-begin
@@ -265,7 +268,7 @@ depend on the value of `gptel-org-branching-context', which see."
                            (list (point-min)))))
                  (end-bounds
                   (cl-loop
-                   ;; (car start-bounds) is the begining of the current element,
+                   ;; (car start-bounds) is the beginning of the current element,
                    ;; not relevant
                    for pos in (cdr start-bounds)
                    do (goto-char pos) (outline-next-heading)
@@ -276,6 +279,12 @@ depend on the value of `gptel-org-branching-context', which see."
                        for end in end-bounds
                        do (insert-buffer-substring org-buf start end)
                        (goto-char (point-min)))
+              ;; Prepend ROOT_ID context at the very top of the temp buffer so
+              ;; the full pipeline (strip, role-markers, dedup) sees it as the
+              ;; top-most context heading(s).
+              (when root-id-content
+                (goto-char (point-min))
+                (insert root-id-content "\n"))
               (goto-char (point-max))
               (gptel-org--unescape-tool-results)
               (gptel-org--strip-block-headers)
@@ -283,16 +292,26 @@ depend on the value of `gptel-org-branching-context', which see."
                            (buffer-local-value 'gptel-org-ignore-elements
                                                org-buf)))
                 (gptel-org--strip-elements))
-              ;; Replace the headings with @user
+              ;; Replace the headings with @user/@assistant, deduplicate,
+              ;; then convert markers to gptel text properties
               (gptel-org--replace-headings-with-role-markers)
               (gptel-org-clean-duplicates)
+              ;; (gptel-org--propertize-role-markers)
               (setq org-complex-heading-regexp ;For org-element-context to run
                     (buffer-local-value 'org-complex-heading-regexp org-buf))
               (current-buffer))))
       ;; Create prompt the usual way
-      (let ((org-buf (current-buffer))
-            (beg (point-min)))
+      (let* ((org-buf (current-buffer))
+             (beg (point-min))
+             ;; ROOT_ID: resolve outside the temp buffer while org-buf is current
+             (root-id (org-entry-get (point) "ROOT_ID" nil))
+             (root-id-content (when root-id
+                                (gptel-org--root-id-subtree-string root-id))))
         (gptel--with-buffer-copy org-buf beg prompt-end
+          ;; Prepend ROOT_ID context at the very top before the pipeline runs
+          (when root-id-content
+            (goto-char (point-min))
+            (insert root-id-content "\n"))
           (gptel-org--unescape-tool-results)
           (gptel-org--strip-block-headers)
           (when-let* ((gptel-org-ignore-elements ;not copied by -with-buffer-copy
@@ -874,16 +893,25 @@ cleaning up after."
                    (set-marker start-pt (point-max)))))))))
 
 (defun gptel-org--replace-headings-with-role-markers ()
-  "Replace org headings with @user: and @assistant: role markers.
-Alternates between @user: and @assistant: markers, starting with @user:."
+  "Replace org headings with @user or @assistant role markers.
+
+Org headings that directly precede existing @assistant content are
+converted to @assistant; all other headings become @user.  This
+preserves conversation history stored as child headings."
   (save-excursion
     (goto-char (point-min))
-    (while (re-search-forward "^*+ " nil t)
-      (let ((heading-start (line-beginning-position))
-            (heading-end (line-end-position)))
-        ;; Replace the heading line with role marker
+    (while (re-search-forward "^\\*+ " nil t)
+      (let* ((heading-start (line-beginning-position))
+             ;; Peek at the first non-blank line after the heading to see if
+             ;; it is already an @assistant marker (ROOT_ID context may carry
+             ;; assistant turns as child headings).
+             (role
+              (save-excursion
+                (forward-line 1)
+                (skip-chars-forward " \t\n")
+                (if (looking-at "^@assistant") "assistant" "user"))))
         (delete-region (point) heading-start)
-        (insert "@user\n")))))
+        (insert (concat "@" role "\n"))))))
 
 (defun gptel-org-clean-duplicates ()
   "Clean AI conversation in current buffer to ensure proper @user/@assistant sequence.
@@ -906,6 +934,100 @@ Removes duplicate consecutive tags and ensures proper alternation."
            (t
             (setq last-tag current-tag))))))))
 
+(defun gptel-org--propertize-role-markers ()
+  "Convert @user / @assistant plain-text markers to gptel text properties.
+
+After `gptel-org--replace-headings-with-role-markers' and
+`gptel-org-clean-duplicates' run, the temp prompt buffer contains
+role markers like:
+
+  @user
+  Some user text...
+
+  @assistant
+  Some assistant response...
+
+This function replaces those marker lines with the text properties
+that `gptel--parse-buffer' expects:
+- user regions      → no gptel property (nil, the default)
+- assistant regions → gptel property \\='response
+
+Regions that already carry a non-nil gptel property — i.e.
+\\='(tool . ID), \\='ignore, etc. — are left untouched so that
+`gptel--parse-buffer' can handle tool calls and tool results
+correctly.
+
+The @user / @assistant marker lines themselves are deleted so they
+do not appear in the content sent to the LLM."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((role-re "^@\\(user\\|assistant\\)[ \t]*\n")
+          segments)
+      ;; First pass: collect (marker-beg marker-end role) triples forward
+      (while (re-search-forward role-re nil t)
+        (push (list (match-beginning 0)
+                    (match-end 0)
+                    (if (string= (match-string 1) "assistant")
+                        'response nil))
+              segments))
+      (setq segments (nreverse segments))
+      ;; Second pass: work backwards so deletions don't shift earlier positions.
+      ;; For each segment apply 'response only to sub-regions whose existing
+      ;; gptel property is nil — preserving (tool . ID), 'ignore, etc.
+      (let ((end-of-buffer (point-max)))
+        (cl-loop
+         for (mbeg mend role) in (reverse segments)
+         for content-end = end-of-buffer
+         do
+         (when role                    ; assistant region
+           (with-silent-modifications
+             (let ((pos mend))
+               (while (< pos content-end)
+                 (let* ((next (next-single-property-change pos 'gptel nil content-end))
+                        (existing (get-text-property pos 'gptel)))
+                   (when (null existing) ; only stamp unpropertized spans
+                     (add-text-properties pos next
+                                          '(gptel response front-sticky (gptel))))
+                   (setq pos next))))))
+         (setq end-of-buffer mbeg)
+         (delete-region mbeg mend))))))  ; remove the marker line
+
+
+;;; ROOT_ID support for gptel-org--create-prompt-buffer
+
+(defun gptel-org--root-id-subtree-string (root-id)
+  "Return the raw org subtree string for ROOT-ID, or nil if not found.
+
+ROOT-ID may be:
+- \"file.org:id\"  — look up :ID: in file.org relative to `default-directory'
+- plain org-id    — fall back to `org-id-find'"
+  (if (string-match "\\(.+\\):\\(.+\\)" root-id)
+      (let* ((file (match-string 1 root-id))
+             (id   (match-string 2 root-id))
+             (path (expand-file-name file)))
+        (when (file-exists-p path)
+          (with-current-buffer (find-file-noselect path)
+            (save-excursion
+              (goto-char (point-min))
+              (when (re-search-forward
+                     (format "^[ \t]*:ID:[ \t]+%s[ \t]*$" (regexp-quote id))
+                     nil t)
+                (org-back-to-heading t)
+                (let* ((start (point))
+                       (end (save-excursion
+                          (outline-next-heading)
+                          (point))))
+                  (buffer-substring start end)))))))
+    (when-let* ((marker (org-id-find root-id 'marker)))
+      (with-current-buffer (marker-buffer marker)
+        (save-excursion
+          (goto-char marker)
+          (org-back-to-heading t)
+          (let* ((start (point))
+                 (end (save-excursion
+                          (outline-next-heading)
+                          (point))))
+            (buffer-substring start end)))))))
 
 (provide 'gptel-org)
 ;;; gptel-org.el ends here
