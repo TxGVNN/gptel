@@ -65,6 +65,8 @@
 (declare-function org-open-line "org")
 (declare-function org-at-heading-p "org")
 (declare-function org-get-heading "org")
+(declare-function org-entry-delete "org")
+(declare-function org-end-of-subtree "org")
 
 ;; Bundle `org-element-lineage-map' if it's not available (for Org 9.67 or older)
 (eval-and-compile
@@ -589,6 +591,24 @@ ARGS are the original function call arguments."
 
 
 ;;; Saving and restoring state
+(defconst gptel-org--footer-heading "COMMENT gptel-config"
+  "Heading under which gptel stores its state at the end of the buffer.
+
+Org property drawers must follow a heading (or sit at the very top
+of the file, in its zeroth section).  To keep the chat transcript
+free of configuration clutter, gptel appends a heading with this
+text to the end of the buffer and stores its state drawer there
+instead of at `point-min'.")
+
+(defun gptel-org--footer-heading-point ()
+  "Return the position of gptel's footer heading, or nil if absent."
+  (org-with-wide-buffer
+   (goto-char (point-max))
+   (when (re-search-backward
+          (concat "^\\*+ " (regexp-quote gptel-org--footer-heading) "[ \t]*$")
+          nil t)
+     (point))))
+
 (defun gptel-org--entry-properties (&optional pt)
   "Find gptel configuration properties stored at PT."
   (pcase-let
@@ -626,11 +646,11 @@ ARGS are the original function call arguments."
   (save-restriction
     (widen)
     (condition-case status
-        (progn
-          (when-let* ((bounds (org-entry-get (point-min) "GPTEL_BOUNDS")))
+        (let ((pt (or (gptel-org--footer-heading-point) (point-min))))
+          (when-let* ((bounds (org-entry-get pt "GPTEL_BOUNDS")))
             (gptel--restore-props (read bounds)))
           (pcase-let ((`(,presets ,system ,backend ,model ,temperature ,tokens ,num ,tools)
-                       (gptel-org--entry-properties (point-min))))
+                       (gptel-org--entry-properties pt)))
             (dolist (preset presets)
               (if (gptel-get-preset preset)
                   (progn (gptel--apply-preset
@@ -718,27 +738,78 @@ send in queries.  (See `gptel--num-messages-to-send' for the last one.)"
   (when msg
     (message "Added gptel configuration to current headline.")))
 
+(defconst gptel-org--state-properties
+  '("GPTEL_PRESET" "GPTEL_SYSTEM" "GPTEL_BACKEND"
+    "GPTEL_MODEL" "GPTEL_TEMPERATURE" "GPTEL_MAX_TOKENS"
+    "GPTEL_NUM_MESSAGES_TO_SEND" "GPTEL_TOOLS" "GPTEL_BOUNDS")
+  "Org properties gptel uses to save its state in an Org buffer.")
+
+(defun gptel-org--ensure-footer-heading ()
+  "Return the position of gptel's footer heading, creating it if needed.
+
+If a legacy gptel state drawer exists at `point-min', its contents
+are copied to the new footer heading and then removed from the top
+of the buffer."
+  (goto-char (point-min))
+  (or (gptel-org--footer-heading-point)
+      (let ((legacy-values
+             (mapcar (lambda (prop) (org-entry-get (point-min) prop))
+                     gptel-org--state-properties)))
+        (goto-char (point-max))
+        (unless (bolp) (insert "\n"))
+        (prog1 (point)
+          (insert "* " gptel-org--footer-heading "\n")
+          (let ((pt (line-beginning-position 0)))
+            (cl-loop for prop in gptel-org--state-properties
+                     for value in legacy-values
+                     when value do (org-entry-put pt prop value)
+                     (org-entry-delete (point-min) prop)))))))
+
+;;;###autoload
+(defun gptel-org-migrate-footer-properties ()
+  "Move gptel's state drawer from the top of the buffer to the end.
+
+Older gptel chat buffers store their configuration (GPTEL_MODEL,
+GPTEL_BACKEND, GPTEL_BOUNDS and so on) in a `:PROPERTIES:' drawer at
+the very top of the file.  This command moves that drawer to a
+heading at the end of the buffer instead, out of the way of the
+transcript.  See `gptel-org--footer-heading'.
+
+Does nothing (beyond a message) if this buffer has already been
+migrated, or if it has no gptel state to migrate."
+  (interactive)
+  (unless (derived-mode-p 'org-mode)
+    (user-error "This command only works in Org-mode gptel buffers"))
+  (org-with-wide-buffer
+   (goto-char (point-min))
+   (cond
+    ((gptel-org--footer-heading-point)
+     (message "This buffer's gptel properties are already at the end of the file."))
+    ((not (org-entry-get (point-min) "GPTEL_MODEL"))
+     (message "No gptel properties found at the top of this buffer; nothing to migrate."))
+    (t
+     (gptel-org--ensure-footer-heading)
+     (message "Moved gptel properties to the end of the buffer.")))))
+
 (defun gptel-org--save-state ()
   "Write the gptel state to the Org buffer as Org properties."
   (org-with-wide-buffer
-   (goto-char (point-min))
-   (when (org-at-heading-p)
-     (org-open-line 1))
-   (gptel-org-set-properties (point-min))
-   ;; Save response boundaries
-   (letrec ((write-bounds
-             (lambda (attempts)
-               (when-let* ((bounds (gptel--get-buffer-bounds))
-                           ;; first value of ((prop . ((beg end val)...))...)
-                           (offset (caadar bounds))
-                           (offset-marker (set-marker (make-marker) offset)))
-                 (let ((print-length))
-                   (org-entry-put (point-min) "GPTEL_BOUNDS"
-                                  (prin1-to-string (gptel--get-buffer-bounds))))
-                 (when (and (not (= (marker-position offset-marker) offset))
-                            (> attempts 0))
-                   (funcall write-bounds (1- attempts)))))))
-     (funcall write-bounds 6))))
+   (let ((pt (gptel-org--ensure-footer-heading)))
+     (gptel-org-set-properties pt)
+     ;; Save response boundaries
+     (letrec ((write-bounds
+               (lambda (attempts)
+                 (when-let* ((bounds (gptel--get-buffer-bounds))
+                             ;; first value of ((prop . ((beg end val)...))...)
+                             (offset (caadar bounds))
+                             (offset-marker (set-marker (make-marker) offset)))
+                   (let ((print-length))
+                     (org-entry-put pt "GPTEL_BOUNDS"
+                                    (prin1-to-string (gptel--get-buffer-bounds))))
+                   (when (and (not (= (marker-position offset-marker) offset))
+                              (> attempts 0))
+                     (funcall write-bounds (1- attempts)))))))
+       (funcall write-bounds 6)))))
 
 
 ;;; Transforming responses
