@@ -65,7 +65,6 @@
 (declare-function org-open-line "org")
 (declare-function org-at-heading-p "org")
 (declare-function org-get-heading "org")
-(declare-function org-at-heading-p "org")
 
 ;; Bundle `org-element-lineage-map' if it's not available (for Org 9.67 or older)
 (eval-and-compile
@@ -255,7 +254,7 @@ depend on the value of `gptel-org-branching-context', which see."
                     "Using `gptel-org-branching-context' requires Org version 9.7 or higher, it will be ignored."))))
         ;; Create prompt from direct ancestors of point
         (save-excursion
-          (let* ((root-id (org-entry-get (point) "ROOT_ID" nil))
+          (let* ((root-id (org-entry-get (point) "ROOT_ID" 'inherit))
                  (root-id-content (when root-id
                                     (gptel-org--root-id-subtree-string root-id)))
                  (org-buf (current-buffer))
@@ -284,7 +283,17 @@ depend on the value of `gptel-org-branching-context', which see."
             (gptel--with-buffer-copy org-buf nil nil
               (cl-loop for start in start-bounds
                        for end in end-bounds
-                       do (insert-buffer-substring org-buf start end)
+                       ;; ROOT_ID_INLINE on the heading at START: splice its
+                       ;; referenced content in just before this heading,
+                       ;; i.e. at its own position in the lineage, instead
+                       ;; of hoisting it to the top like ROOT_ID.
+                       for here-content = (when-let*
+                                              ((root-id-inline
+                                                (with-current-buffer org-buf
+                                                  (org-entry-get start "ROOT_ID_INLINE" nil))))
+                                            (gptel-org--root-id-subtree-string root-id-inline))
+                       do (when here-content (insert here-content "\n"))
+                       (insert-buffer-substring org-buf start end)
                        (goto-char (point-min)))
               ;; Prepend ROOT_ID context at the very top of the temp buffer so
               ;; the full pipeline (strip, role-markers, dedup) sees it as the
@@ -318,11 +327,23 @@ depend on the value of `gptel-org-branching-context', which see."
       ;; Create prompt the usual way
       (let* ((org-buf (current-buffer))
              (beg (point-min))
-             ;; ROOT_ID: resolve outside the temp buffer while org-buf is current
-             (root-id (org-entry-get (point) "ROOT_ID" nil))
+             ;; ROOT_ID: resolve outside the temp buffer while org-buf is current.
+             ;; Inherited so the nearest ancestor's ROOT_ID applies (an
+             ;; intervening ROOT_ID_INLINE does not block this inheritance).
+             (root-id (org-entry-get (point) "ROOT_ID" 'inherit))
              (root-id-content (when root-id
-                                (gptel-org--root-id-subtree-string root-id))))
+                                (gptel-org--root-id-subtree-string root-id)))
+             ;; ROOT_ID_INLINE: resolve outside the temp buffer, for every
+             ;; heading in [beg, prompt-end) that declares it
+             (root-id-inline-insertions
+              (gptel-org--root-id-inline-insertions beg prompt-end)))
         (gptel--with-buffer-copy org-buf beg prompt-end
+          ;; Splice in ROOT_ID_INLINE content right before each heading that
+          ;; declares it, working from the bottom up so earlier insertions
+          ;; don't shift the positions of insertions still to be made.
+          (dolist (entry (reverse root-id-inline-insertions))
+            (goto-char (- (car entry) beg -1))
+            (insert (cdr entry) "\n"))
           ;; Prepend ROOT_ID context at the very top before the pipeline runs
           (when root-id-content
             (goto-char (point-min))
@@ -1014,6 +1035,25 @@ do not appear in the content sent to the LLM."
 
 
 ;;; ROOT_ID support for gptel-org--create-prompt-buffer
+
+(defun gptel-org--root-id-inline-insertions (beg end)
+  "Find ROOT_ID_INLINE headings in the org buffer between BEG and END.
+
+Returns an alist of (POSITION . CONTENT), where POSITION is the
+buffer position (in the current, unnarrowed org buffer) of the
+heading declaring ROOT_ID_INLINE, and CONTENT is the subtree text
+referenced by its value.  Meant to be called with the org buffer
+as current buffer, widened."
+  (let (insertions)
+    (save-excursion
+      (goto-char beg)
+      (unless (org-at-heading-p) (outline-next-heading))
+      (while (and (< (point) end) (org-at-heading-p))
+        (when-let* ((root-id-inline (org-entry-get (point) "ROOT_ID_INLINE" nil))
+                    (content (gptel-org--root-id-subtree-string root-id-inline)))
+          (push (cons (point) content) insertions))
+        (outline-next-heading)))
+    (nreverse insertions)))
 
 (defun gptel-org--root-id-subtree-string (root-id)
   "Return the raw org subtree string for ROOT-ID, or nil if not found.
